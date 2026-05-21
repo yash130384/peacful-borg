@@ -60,6 +60,25 @@ function getSessionMetadataSync(filename) {
   if (fs.existsSync(cachePath)) {
     try {
       const data = fs.readJsonSync(cachePath);
+      let status = 'FALLBACK';
+      let avgError = null;
+
+      const trackCSVName = mapTrackNameToCSV(data.trackName || '');
+      const csvPath = path.join(TRACKS_DIR, `${trackCSVName}.csv`);
+      if (fs.existsSync(csvPath)) {
+        if (data.alignmentParams && data.alignmentParams.avgError !== undefined) {
+          avgError = data.alignmentParams.avgError;
+        } else if (data.alignmentParams && data.alignmentParams.mse !== undefined) {
+          avgError = Math.sqrt(data.alignmentParams.mse);
+        }
+        
+        if (avgError !== null) {
+          status = avgError > 15 ? 'MISMATCH' : 'VERIFIED';
+        } else {
+          status = data.alignmentParams ? 'VERIFIED' : 'FALLBACK';
+        }
+      }
+
       return {
         filename,
         trackName: data.trackName,
@@ -67,7 +86,9 @@ function getSessionMetadataSync(filename) {
         dateString,
         sizeMB: (fs.statSync(filePath).size / (1024 * 1024)).toFixed(1),
         isProcessed: true,
-        isRace: data.sessionType === 15 || data.sessionType === 16 || data.sessionType === 17
+        isRace: data.sessionType === 15 || data.sessionType === 16 || data.sessionType === 17,
+        status,
+        avgError
       };
     } catch (e) {
       console.error(`Error reading cache for ${filename}:`, e);
@@ -110,6 +131,10 @@ function getSessionMetadataSync(filename) {
     const isRace = sessionType === 15 || sessionType === 16 || sessionType === 17;
     const stat = fs.statSync(filePath);
     
+    const trackCSVName = mapTrackNameToCSV(trackName);
+    const csvPath = path.join(TRACKS_DIR, `${trackCSVName}.csv`);
+    const status = fs.existsSync(csvPath) ? 'VERIFIED' : 'FALLBACK';
+
     return {
       filename,
       trackName,
@@ -117,7 +142,9 @@ function getSessionMetadataSync(filename) {
       dateString,
       sizeMB: (stat.size / (1024 * 1024)).toFixed(1),
       isProcessed: false,
-      isRace
+      isRace,
+      status,
+      avgError: null
     };
   } catch (e) {
     console.error(`Error reading header for ${filename}:`, e);
@@ -436,6 +463,17 @@ async function getOrParseSession(filename) {
     console.error("Failed to compute alignment parameters during ingestion:", alignErr);
   }
 
+  let status = 'FALLBACK';
+  let avgError = null;
+  const trackCSVName = mapTrackNameToCSV(trackName);
+  const csvPath = path.join(TRACKS_DIR, `${trackCSVName}.csv`);
+  if (fs.existsSync(csvPath)) {
+    if (alignmentParams) {
+      avgError = alignmentParams.avgError || (alignmentParams.mse !== undefined ? Math.sqrt(alignmentParams.mse) : null);
+      status = (avgError !== null && avgError > 15) ? 'MISMATCH' : 'VERIFIED';
+    }
+  }
+
   const responseData = {
     filename,
     trackId,
@@ -444,7 +482,9 @@ async function getOrParseSession(filename) {
     sessionTypeName: SESSION_TYPES[sessionType] || `Session ${sessionType}`,
     drivers: Object.values(drivers),
     telemetry,
-    alignmentParams
+    alignmentParams,
+    status,
+    avgError
   };
 
   // Save to cache
@@ -624,7 +664,8 @@ function getAlignmentParameters(telemetryPoints, csvPoints) {
             scale: S,
             centroidA,
             centroidB,
-            mse: bestMSE
+            mse: bestMSE,
+            avgError: Math.sqrt(bestMSE)
           };
         }
       }

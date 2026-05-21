@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
+import { Shield, ShieldCheck, ShieldAlert } from 'lucide-react';
 
 // Helper to get 3-letter driver abbreviation (e.g., "Max Verstappen" -> "VER")
 export const getDriverAbbreviation = (name) => {
@@ -19,7 +20,9 @@ const TrackMap = ({
   driver2Index, 
   onSelectDriver,
   trackName,
-  sessionFilename
+  sessionFilename,
+  status,
+  avgError
 }) => {
   const canvasRef = useRef(null);
   
@@ -618,6 +621,28 @@ const TrackMap = ({
         <div className="bg-[#0f172a]/80 backdrop-blur-md px-4 py-2 rounded-xl border border-[#1e293b] pointer-events-auto flex items-center gap-3">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
           <span className="text-xs font-bold text-slate-300 font-sans tracking-wide">2D TRACK STREAM</span>
+          {status && (
+            <div className="flex items-center gap-1.5 pl-3 border-l border-[#1e293b]/80 h-3.5">
+              {status === 'VERIFIED' && (
+                <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/35 px-2 py-0.5 rounded text-[9px] font-orbitron font-extrabold tracking-wider uppercase shadow-[0_0_8px_rgba(16,185,129,0.12)]">
+                  <ShieldCheck size={10} className="text-emerald-400" />
+                  VERIFIZIERT {avgError !== null && `(~${avgError.toFixed(1)}m)`}
+                </span>
+              )}
+              {status === 'MISMATCH' && (
+                <span className="flex items-center gap-1 bg-amber-500/10 text-amber-500 border border-amber-500/35 px-2 py-0.5 rounded text-[9px] font-orbitron font-extrabold tracking-wider uppercase shadow-[0_0_8px_rgba(245,158,11,0.12)] animate-pulse">
+                  <ShieldAlert size={10} className="text-amber-500" />
+                  WARNUNG {avgError !== null && `(~${avgError.toFixed(1)}m)`}
+                </span>
+              )}
+              {status === 'FALLBACK' && (
+                <span className="flex items-center gap-1 bg-slate-800/40 text-slate-400 border border-slate-700/50 px-2 py-0.5 rounded text-[9px] font-orbitron font-extrabold tracking-wider uppercase">
+                  <Shield size={10} className="text-slate-400" />
+                  FALLBACK (KEINE CSV)
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <div className="flex gap-2 pointer-events-auto">
           <button

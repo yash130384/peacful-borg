@@ -12,7 +12,10 @@ import {
   Database,
   Layers,
   Info,
-  ArrowLeft
+  ArrowLeft,
+  Shield,
+  ShieldCheck,
+  ShieldAlert
 } from 'lucide-react';
 import TrackMap, { getDriverAbbreviation } from './components/TrackMap';
 import TelemetryChart from './components/TelemetryChart';
@@ -24,6 +27,36 @@ const formatTelemetryTime = (timeInSecs) => {
   const secs = Math.floor(timeInSecs % 60);
   const ms = Math.floor((timeInSecs % 1) * 1000);
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+};
+
+// Helper to render high-end coordinate validation status badges
+const renderValidationBadge = (status, avgError) => {
+  const errorText = avgError !== null && avgError !== undefined ? ` (~${avgError.toFixed(1)}m)` : '';
+  
+  if (status === 'VERIFIED') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[9px] font-orbitron font-extrabold tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/35 px-2 py-0.5 rounded shadow-[0_0_8px_rgba(16,185,129,0.12)] uppercase">
+        <ShieldCheck size={10} className="text-emerald-400" />
+        Verifiziert{errorText}
+      </span>
+    );
+  }
+  
+  if (status === 'MISMATCH') {
+    return (
+      <span className="inline-flex items-center gap-1 text-[9px] font-orbitron font-extrabold tracking-wider bg-amber-500/10 text-amber-500 border border-amber-500/35 px-2 py-0.5 rounded shadow-[0_0_8px_rgba(245,158,11,0.12)] uppercase animate-pulse">
+        <ShieldAlert size={10} className="text-amber-500" />
+        Fehlpassung{errorText}
+      </span>
+    );
+  }
+  
+  return (
+    <span className="inline-flex items-center gap-1 text-[9px] font-orbitron font-extrabold tracking-wider bg-slate-800/40 text-slate-400 border border-slate-700/50 px-2 py-0.5 rounded uppercase">
+      <Shield size={10} className="text-slate-400" />
+      Fallback-Pfad (keine CSV)
+    </span>
+  );
 };
 
 function App() {
@@ -248,6 +281,29 @@ function App() {
                 <Database size={14} className="text-amber-400" />
                 <span>DRIVERS: <strong className="text-slate-100">{sessionData.drivers.length}</strong></span>
               </div>
+              
+              {sessionData.status && (
+                <div className="flex items-center gap-1.5 pl-4 border-l border-[#1e293b] h-4">
+                  {sessionData.status === 'VERIFIED' && (
+                    <span className="flex items-center gap-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-orbitron font-extrabold tracking-wider uppercase shadow-[0_0_10px_rgba(16,185,129,0.15)]">
+                      <ShieldCheck size={12} className="text-emerald-400" />
+                      Verifizierte Streckenausrichtung {sessionData.avgError !== null && `(~${sessionData.avgError.toFixed(1)}m)`}
+                    </span>
+                  )}
+                  {sessionData.status === 'MISMATCH' && (
+                    <span className="flex items-center gap-1 bg-amber-500/10 text-amber-500 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-orbitron font-extrabold tracking-wider uppercase shadow-[0_0_10px_rgba(245,158,11,0.15)] animate-pulse">
+                      <ShieldAlert size={12} className="text-amber-500" />
+                      Warnung: Streckenabweichung {sessionData.avgError !== null && `(~${sessionData.avgError.toFixed(1)}m)`}
+                    </span>
+                  )}
+                  {sessionData.status === 'FALLBACK' && (
+                    <span className="flex items-center gap-1 bg-slate-800/40 text-slate-400 border border-slate-700/50 px-2 py-0.5 rounded text-[10px] font-orbitron font-extrabold tracking-wider uppercase">
+                      <Shield size={12} className="text-slate-400" />
+                      Fallback-Pfad (keine CSV)
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -326,7 +382,10 @@ function App() {
                           <h3 className="font-orbitron font-extrabold text-lg text-slate-100 group-hover:text-sky-400 transition duration-200">
                             {session.trackName}
                           </h3>
-                          <p className="text-[10px] text-slate-500 mt-0.5 font-mono truncate">{session.filename}</p>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-mono truncate mb-2">{session.filename}</p>
+                          <div className="flex items-center mt-1.5">
+                            {renderValidationBadge(session.status, session.avgError)}
+                          </div>
                         </div>
                         
                         {/* Meta Info */}
@@ -431,6 +490,8 @@ function App() {
                         onSelectDriver={handleMapSelectDriver}
                         trackName={sessionData.trackName}
                         sessionFilename={sessionData.filename}
+                        status={sessionData.status}
+                        avgError={sessionData.avgError}
                       />
                     </div>
                   </div>
