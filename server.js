@@ -134,6 +134,17 @@ app.get('/api/sessions', async (req, res) => {
       return res.status(404).json({ error: `Reserve directory not found at ${RESERVE_DIR}` });
     }
 
+    // Load ingest report if it exists
+    let report = {};
+    const reportPath = path.join(CACHE_DIR, 'ingest_report.json');
+    if (await fs.pathExists(reportPath)) {
+      try {
+        report = await fs.readJson(reportPath);
+      } catch (e) {
+        console.error("Error reading ingest_report.json:", e);
+      }
+    }
+
     const files = await fs.readdir(RESERVE_DIR);
     const binFiles = files.filter(f => f.endsWith('.bin'));
 
@@ -141,6 +152,9 @@ app.get('/api/sessions', async (req, res) => {
     for (const filename of binFiles) {
       const meta = getSessionMetadataSync(filename);
       if (meta && meta.isRace) {
+        const sessionReport = report[filename] || {};
+        meta.status = sessionReport.status || 'UNVALUED';
+        meta.avgError = sessionReport.avgError !== undefined ? sessionReport.avgError : null;
         raceSessions.push(meta);
       }
     }
@@ -370,7 +384,7 @@ async function getOrParseSession(filename) {
         if (parts.length >= 4) {
           csvPoints.push({
             x: parseFloat(parts[0]),
-            z: parseFloat(parts[1]),
+            z: -parseFloat(parts[1]), // mirror z = -y_m
             wRight: parseFloat(parts[2]),
             wLeft: parseFloat(parts[3])
           });
@@ -412,7 +426,9 @@ async function getOrParseSession(filename) {
             telemetryPoints = driverTelemetry.map(pt => ({ x: pt.x, z: pt.z }));
           }
 
-          alignmentParams = getAlignmentParameters(telemetryPoints, csvPoints);
+          if (telemetryPoints.length > 0) {
+            alignmentParams = getAlignmentParameters(telemetryPoints, csvPoints);
+          }
         }
       }
     }
@@ -607,7 +623,8 @@ function getAlignmentParameters(telemetryPoints, csvPoints) {
             theta,
             scale: S,
             centroidA,
-            centroidB
+            centroidB,
+            mse: bestMSE
           };
         }
       }
@@ -653,7 +670,7 @@ async function getSessionAlignmentParams(sessionFilename, trackName) {
     if (parts.length >= 4) {
       csvPoints.push({
         x: parseFloat(parts[0]),
-        z: parseFloat(parts[1]),
+        z: -parseFloat(parts[1]), // mirror z = -y_m
         wRight: parseFloat(parts[2]),
         wLeft: parseFloat(parts[3])
       });
@@ -707,7 +724,10 @@ async function getSessionAlignmentParams(sessionFilename, trackName) {
     telemetryPoints = driverTelemetry.map(pt => ({ x: pt.x, z: pt.z }));
   }
 
-  const alignmentParams = getAlignmentParameters(telemetryPoints, csvPoints);
+  let alignmentParams = null;
+  if (telemetryPoints.length > 0) {
+    alignmentParams = getAlignmentParameters(telemetryPoints, csvPoints);
+  }
   return { alignmentParams, csvPoints };
 }
 
@@ -724,30 +744,39 @@ app.get('/api/tracks/:trackName', async (req, res) => {
     const leftBorder = [];
     const rightBorder = [];
     
-    for (let i = 0; i < csvPoints.length; i++) {
+    const N_pts = csvPoints.length;
+    for (let i = 0; i < N_pts; i++) {
+      centerline.push(transformPoint(csvPoints[i], alignmentParams));
+    }
+
+    for (let i = 0; i < N_pts; i++) {
+      const P_aligned = centerline[i];
+      const nextIdx = (i + 1) % N_pts;
+      const prevIdx = (i - 1 + N_pts) % N_pts;
+
+      const T_x = centerline[nextIdx].x - centerline[prevIdx].x;
+      const T_z = centerline[nextIdx].z - centerline[prevIdx].z;
+      const len = Math.hypot(T_x, T_z) || 1;
+
+      const T_norm_x = T_x / len;
+      const T_norm_z = T_z / len;
+
+      const N_x = -T_norm_z;
+      const N_z = T_norm_x;
+
       const pt = csvPoints[i];
-      const nextPt = csvPoints[(i + 1) % csvPoints.length];
-      
-      const dx = nextPt.x - pt.x;
-      const dz = nextPt.z - pt.z;
-      const len = Math.hypot(dx, dz) || 1;
-      
-      const nx = -dz / len;
-      const nz = dx / len;
-      
-      const lPt = {
-        x: pt.x - pt.wLeft * nx,
-        z: pt.z - pt.wLeft * nz
-      };
-      
-      const rPt = {
-        x: pt.x + pt.wRight * nx,
-        z: pt.z + pt.wRight * nz
-      };
-      
-      centerline.push(transformPoint(pt, alignmentParams));
-      leftBorder.push(transformPoint(lPt, alignmentParams));
-      rightBorder.push(transformPoint(rPt, alignmentParams));
+      const w_tr_left = pt.wLeft;
+      const w_tr_right = pt.wRight;
+
+      leftBorder.push({
+        x: P_aligned.x + w_tr_left * N_x,
+        z: P_aligned.z + w_tr_left * N_z
+      });
+
+      rightBorder.push({
+        x: P_aligned.x - w_tr_right * N_x,
+        z: P_aligned.z - w_tr_right * N_z
+      });
     }
 
     res.json({ centerline, leftBorder, rightBorder });
@@ -782,7 +811,7 @@ app.get('/api/racelines/:trackName', async (req, res) => {
       if (parts.length >= 2) {
         racelinePoints.push({
           x: parseFloat(parts[0]),
-          z: parseFloat(parts[1])
+          z: -parseFloat(parts[1]) // mirror z = -y_m
         });
       }
     });
@@ -797,8 +826,39 @@ app.get('/api/racelines/:trackName', async (req, res) => {
     console.error("Error loading raceline:", error);
     res.status(404).json({ error: error.message });
   }
+});app.get('/api/ingest-report', async (req, res) => {
+  try {
+    const reportPath = path.join(CACHE_DIR, 'ingest_report.json');
+    if (await fs.pathExists(reportPath)) {
+      const report = await fs.readJson(reportPath);
+      res.json(report);
+    } else {
+      res.status(404).json({ error: "Ingest report not found. Run ingest-and-validate.js first." });
+    }
+  } catch (error) {
+    console.error("Error serving ingest report:", error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend server running on http://localhost:${PORT}`);
-});
+if (process.argv[1] && (
+  process.argv[1] === fileURLToPath(import.meta.url) || 
+  fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+)) {
+  app.listen(PORT, () => {
+    console.log(`Backend server running on http://localhost:${PORT}`);
+  });
+}
+
+export {
+  TRACKS,
+  SESSION_TYPES,
+  RESERVE_DIR,
+  CACHE_DIR,
+  TRACKS_DIR,
+  getOrParseSession,
+  mapTrackNameToCSV,
+  getAlignmentParameters,
+  transformPoint,
+  app
+};
