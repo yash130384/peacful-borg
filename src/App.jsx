@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import TrackMap, { getDriverAbbreviation } from './components/TrackMap';
 import TelemetryChart from './components/TelemetryChart';
+import DriverCoach from './components/DriverCoach';
 
 // Helper to format time into MM:SS.FFF
 const formatTelemetryTime = (timeInSecs) => {
@@ -259,7 +260,7 @@ function App() {
           </div>
         </div>
 
-        {currentView === 'race' && sessionData ? (
+        {currentView !== 'list' && sessionData ? (
           <div className="flex flex-wrap items-center gap-4">
             <button
               onClick={handleBackToOverview}
@@ -268,6 +269,32 @@ function App() {
               <ArrowLeft size={14} className="text-sky-400" />
               <span>Zurück zur Übersicht</span>
             </button>
+
+            {/* View Mode Tabs (Simulation vs Coaching) */}
+            <div className="flex bg-[#070a13] border border-[#1e293b] rounded-xl p-1">
+              <button
+                onClick={() => setCurrentView('race')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans font-bold transition duration-150 ${
+                  currentView === 'race'
+                    ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Play size={12} className={currentView === 'race' ? 'text-slate-950' : 'text-sky-400'} />
+                <span>Live-Simulation</span>
+              </button>
+              <button
+                onClick={() => setCurrentView('coach')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans font-bold transition duration-150 ${
+                  currentView === 'coach'
+                    ? 'bg-sky-500 text-slate-950 shadow-md shadow-sky-500/20'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Activity size={12} className={currentView === 'coach' ? 'text-slate-950' : 'text-rose-400'} />
+                <span>Fahrer-Coaching</span>
+              </button>
+            </div>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-[#070a13]/80 px-4 py-2 rounded-xl border border-[#1e293b] text-xs font-mono">
               <div className="flex items-center gap-1.5 text-slate-400">
                 <Layers size={14} className="text-sky-400" />
@@ -460,6 +487,11 @@ function App() {
                   </p>
                 </div>
               </div>
+            ) : currentView === 'coach' ? (
+              <DriverCoach
+                sessionData={sessionData}
+                onBack={handleBackToOverview}
+              />
             ) : (
               /* Loaded Session Dashboard */
               <div className="flex flex-col gap-6 w-full flex-1">

@@ -3,3 +3,4 @@ dist/
 cache/
 scratch/
 .DS_Store
+.env

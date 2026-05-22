@@ -3,6 +3,16 @@ import cors from 'cors';
 import fs from 'fs-extra';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import pool, { initDb } from './db.js';
+import { compressTelemetry, decompressTelemetry } from './telemetry-compressor.js';
+
+dotenv.config();
+
+// Initialize database schema
+initDb().catch(err => {
+  console.error("Failed to initialize database schema on startup:", err);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,41 +167,68 @@ function getSessionMetadataSync(filename) {
 // Retrieve all available session files (filtered to only include Races)
 app.get('/api/sessions', async (req, res) => {
   try {
-    if (!fs.existsSync(RESERVE_DIR)) {
-      return res.status(404).json({ error: `Reserve directory not found at ${RESERVE_DIR}` });
-    }
-
-    // Load ingest report if it exists
-    let report = {};
-    const reportPath = path.join(CACHE_DIR, 'ingest_report.json');
-    if (await fs.pathExists(reportPath)) {
+    // 1. If running locally with access to RESERVE_DIR, check if there are new files to ingest
+    if (fs.existsSync(RESERVE_DIR)) {
       try {
-        report = await fs.readJson(reportPath);
-      } catch (e) {
-        console.error("Error reading ingest_report.json:", e);
+        const files = await fs.readdir(RESERVE_DIR);
+        const binFiles = files.filter(f => f.endsWith('.bin'));
+        
+        // Get already ingested filenames
+        const existingResult = await pool.query('SELECT filename FROM sessions');
+        const existingFiles = new Set(existingResult.rows.map(r => r.filename));
+        
+        // Identify new files
+        const newFiles = binFiles.filter(f => !existingFiles.has(f));
+        
+        for (const filename of newFiles) {
+          console.log(`Auto-ingesting new session from local folder: ${filename}`);
+          const meta = getSessionMetadataSync(filename);
+          if (meta && meta.isRace) {
+            // Parse full session data
+            const sessionData = await getOrParseSession(filename);
+            const compressedBuffer = compressTelemetry(sessionData.telemetry);
+            
+            await pool.query(`
+              INSERT INTO sessions (
+                filename, track_id, track_name, session_type, session_type_name, 
+                drivers, alignment_params, status, avg_error, date_string, size_mb, telemetry_compressed
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+              ON CONFLICT (filename) DO NOTHING
+            `, [
+              filename, sessionData.trackId, sessionData.trackName, sessionData.sessionType, sessionData.sessionTypeName,
+              JSON.stringify(sessionData.drivers), JSON.stringify(sessionData.alignmentParams), sessionData.status, sessionData.avgError,
+              meta.dateString, parseFloat(meta.sizeMB), compressedBuffer
+            ]);
+            console.log(`Auto-ingested and saved to DB: ${filename}`);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to auto-sync local files with database:", err);
       }
     }
 
-    const files = await fs.readdir(RESERVE_DIR);
-    const binFiles = files.filter(f => f.endsWith('.bin'));
-
-    const raceSessions = [];
-    for (const filename of binFiles) {
-      const meta = getSessionMetadataSync(filename);
-      if (meta && meta.isRace) {
-        const sessionReport = report[filename] || {};
-        meta.status = sessionReport.status || 'UNVALUED';
-        meta.avgError = sessionReport.avgError !== undefined ? sessionReport.avgError : null;
-        raceSessions.push(meta);
-      }
-    }
-
-    // Sort: newest first
-    raceSessions.sort((a, b) => b.filename.localeCompare(a.filename));
+    // 2. Fetch all sessions from the database
+    const result = await pool.query(`
+      SELECT filename, track_name, session_type_name AS "sessionType", date_string AS "dateString", size_mb AS "sizeMB", status, avg_error AS "avgError"
+      FROM sessions
+      ORDER BY filename DESC
+    `);
+    
+    const raceSessions = result.rows.map(row => ({
+      filename: row.filename,
+      trackName: row.track_name,
+      sessionType: row.sessionType,
+      dateString: row.dateString,
+      sizeMB: row.sizeMB !== null ? row.sizeMB.toString() : '0.0',
+      isProcessed: true,
+      isRace: true,
+      status: row.status,
+      avgError: row.avgError
+    }));
 
     res.json(raceSessions);
   } catch (error) {
-    console.error("Error listing sessions:", error);
+    console.error("Error listing sessions from DB:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -202,10 +239,77 @@ async function getOrParseSession(filename) {
   const nameWithoutExt = path.basename(filename, '.bin');
   const cachePath = path.join(CACHE_DIR, `${nameWithoutExt}.json`);
 
-  // 1. Return cached if exists
+  // 1. Try to fetch from database
+  try {
+    const dbResult = await pool.query(`
+      SELECT filename, track_id AS "trackId", track_name AS "trackName", session_type AS "sessionType", 
+             session_type_name AS "sessionTypeName", drivers, alignment_params AS "alignmentParams", 
+             status, avg_error AS "avgError", telemetry_compressed
+      FROM sessions
+      WHERE filename = $1
+    `, [filename]);
+
+    if (dbResult.rows.length > 0) {
+      const row = dbResult.rows[0];
+      console.log(`Serving telemetry from database for ${filename}`);
+      
+      const telemetryObj = decompressTelemetry(row.telemetry_compressed);
+      
+      return {
+        filename: row.filename,
+        trackId: row.trackId,
+        trackName: row.trackName,
+        sessionType: row.sessionType,
+        sessionTypeName: row.sessionTypeName,
+        drivers: typeof row.drivers === 'string' ? JSON.parse(row.drivers) : row.drivers,
+        telemetry: telemetryObj,
+        alignmentParams: typeof row.alignmentParams === 'string' ? JSON.parse(row.alignmentParams) : row.alignmentParams,
+        status: row.status,
+        avgError: row.avgError
+      };
+    }
+  } catch (dbErr) {
+    console.error("Database query failed in getOrParseSession, falling back to files:", dbErr);
+  }
+
+  // 2. Return cached local file if exists
   if (await fs.pathExists(cachePath)) {
-    console.log(`Serving cached telemetry for ${filename}`);
-    return await fs.readJson(cachePath);
+    console.log(`Serving cached telemetry from local file for ${filename}`);
+    const data = await fs.readJson(cachePath);
+    
+    // Auto-save to database so next time it is in the database
+    try {
+      const compressedBuffer = compressTelemetry(data.telemetry);
+      let dateString = "Unknown Date";
+      const dateMatch = filename.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/);
+      if (dateMatch) {
+        dateString = dateMatch[1].replace(/-/g, ':').replace(/T/, ' ').replace(/:\d+Z$/, ' UTC');
+      }
+      let sizeMB = 0;
+      const binPath = path.join(RESERVE_DIR, filename);
+      if (await fs.pathExists(binPath)) {
+        sizeMB = parseFloat((fs.statSync(binPath).size / (1024 * 1024)).toFixed(1));
+      } else {
+        sizeMB = parseFloat((fs.statSync(cachePath).size / (1024 * 1024)).toFixed(1));
+      }
+
+      await pool.query(`
+        INSERT INTO sessions (
+          filename, track_id, track_name, session_type, session_type_name, 
+          drivers, alignment_params, status, avg_error, date_string, size_mb, telemetry_compressed
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (filename) DO NOTHING
+      `, [
+        filename, data.trackId, data.trackName, data.sessionType, data.sessionTypeName,
+        JSON.stringify(data.drivers), JSON.stringify(data.alignmentParams), data.status, data.avgError,
+        dateString, sizeMB, compressedBuffer
+      ]);
+      console.log(`Auto-saved local cached session to DB: ${filename}`);
+    } catch (insertErr) {
+      console.error(`Failed to auto-save local cached session to DB: ${filename}`, insertErr);
+    }
+    
+    return data;
   }
 
   // 2. Parse file if not cached
@@ -490,6 +594,44 @@ async function getOrParseSession(filename) {
   // Save to cache
   await fs.writeJson(cachePath, responseData);
   console.log(`Cached telemetry saved for ${filename}`);
+
+  // Save to database
+  try {
+    const compressedBuffer = compressTelemetry(responseData.telemetry);
+    let dateString = "Unknown Date";
+    const dateMatch = filename.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/);
+    if (dateMatch) {
+      dateString = dateMatch[1].replace(/-/g, ':').replace(/T/, ' ').replace(/:\d+Z$/, ' UTC');
+    }
+    const stat = fs.statSync(filePath);
+    const sizeMB = parseFloat((stat.size / (1024 * 1024)).toFixed(1));
+
+    await pool.query(`
+      INSERT INTO sessions (
+        filename, track_id, track_name, session_type, session_type_name, 
+        drivers, alignment_params, status, avg_error, date_string, size_mb, telemetry_compressed
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ON CONFLICT (filename) DO UPDATE SET
+        track_id = EXCLUDED.track_id,
+        track_name = EXCLUDED.track_name,
+        session_type = EXCLUDED.session_type,
+        session_type_name = EXCLUDED.session_type_name,
+        drivers = EXCLUDED.drivers,
+        alignment_params = EXCLUDED.alignment_params,
+        status = EXCLUDED.status,
+        avg_error = EXCLUDED.avg_error,
+        date_string = EXCLUDED.date_string,
+        size_mb = EXCLUDED.size_mb,
+        telemetry_compressed = EXCLUDED.telemetry_compressed
+    `, [
+      filename, responseData.trackId, responseData.trackName, responseData.sessionType, responseData.sessionTypeName,
+      JSON.stringify(responseData.drivers), JSON.stringify(responseData.alignmentParams), responseData.status, responseData.avgError,
+      dateString, sizeMB, compressedBuffer
+    ]);
+    console.log(`Cached telemetry saved to database for ${filename}`);
+  } catch (dbErr) {
+    console.error(`Failed to save parsed telemetry to database for ${filename}:`, dbErr);
+  }
 
   return responseData;
 }
