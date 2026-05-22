@@ -647,8 +647,8 @@ app.get('/api/sessions/:filename', async (req, res) => {
   }
 });
 
-const TRACKS_DIR = '/Users/yash/Desktop/opencode/Telemetrieassistant/tracks';
-const RACELINES_DIR = '/Users/yash/Desktop/opencode/Telemetrieassistant/racelines';
+const TRACKS_DIR = path.join(__dirname, 'tracks');
+const RACELINES_DIR = path.join(__dirname, 'racelines');
 
 const mapTrackNameToCSV = (trackName) => {
   const name = trackName.toLowerCase().replace(/\s+/g, '').replace(/\([^)]*\)/g, '');
