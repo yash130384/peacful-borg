@@ -5,19 +5,41 @@ dotenv.config();
 
 const { Pool } = pg;
 
-if (!process.env.DATABASE_URL) {
+const hasDatabaseUrl = !!process.env.DATABASE_URL;
+
+if (!hasDatabaseUrl) {
   console.warn("WARNING: DATABASE_URL is not set. Database operations will fail.");
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false // Neon database requires SSL
+const pool = hasDatabaseUrl
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: {
+        rejectUnauthorized: false // Neon database requires SSL
+      }
+    })
+  : null;
+
+// Proxy wrapper around pool to throw clear error messages when accessed while pool is null
+const poolProxy = new Proxy({}, {
+  get(target, prop) {
+    if (!pool) {
+      throw new Error("DATABASE_URL environment variable is missing. Please configure it in your Vercel Project Settings.");
+    }
+    const value = pool[prop];
+    if (typeof value === 'function') {
+      return value.bind(pool);
+    }
+    return value;
   }
 });
 
 // Initialize database schema
 export async function initDb() {
+  if (!pool) {
+    console.warn("Database pool not initialized because DATABASE_URL is missing.");
+    return;
+  }
   const client = await pool.connect();
   try {
     await client.query(`
@@ -46,4 +68,5 @@ export async function initDb() {
   }
 }
 
-export default pool;
+export default poolProxy;
+

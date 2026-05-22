@@ -19,7 +19,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3002;
 const RESERVE_DIR = '/Users/yash/Desktop/opencode/UDP Player/REserve';
-const CACHE_DIR = path.join(__dirname, 'cache');
+const CACHE_DIR = process.env.VERCEL ? '/tmp/cache' : path.join(__dirname, 'cache');
 
 // Ensure cache directory exists
 fs.ensureDirSync(CACHE_DIR);
@@ -1024,10 +1024,19 @@ app.get('/api/racelines/:trackName', async (req, res) => {
   }
 });
 
-if (process.argv[1] && (
-  process.argv[1] === fileURLToPath(import.meta.url) || 
-  fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
-)) {
+const isMainModule = () => {
+  if (!process.argv || !process.argv[1]) return false;
+  try {
+    const mainPath = process.argv[1];
+    const currentPath = fileURLToPath(import.meta.url);
+    if (mainPath === currentPath) return true;
+    return fs.realpathSync(mainPath) === currentPath;
+  } catch (err) {
+    return false;
+  }
+};
+
+if (isMainModule()) {
   app.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
   });

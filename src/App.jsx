@@ -93,7 +93,14 @@ function App() {
     try {
       const response = await fetch('/api/sessions');
       if (!response.ok) {
-        throw new Error(`Failed to load sessions: ${response.statusText}`);
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (_) {}
+        throw new Error(`Failed to load sessions: ${errorMsg}`);
       }
       const data = await response.json();
       setSessions(data);
@@ -119,7 +126,14 @@ function App() {
     try {
       const response = await fetch(`/api/sessions/${filename}`);
       if (!response.ok) {
-        throw new Error(`Failed to parse session telemetry: ${response.statusText}`);
+        let errorMsg = `HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) {
+            errorMsg = errData.error;
+          }
+        } catch (_) {}
+        throw new Error(`Failed to parse session telemetry: ${errorMsg}`);
       }
       const data = await response.json();
       setSessionData(data);
